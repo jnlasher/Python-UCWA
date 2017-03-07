@@ -2,9 +2,8 @@ import urllib.request
 import urllib.parse
 import json
 import re
-from pprint import pprint
 
-content = urllib.request.urlopen('https://lyncdiscoverinternal.domain.com/')
+content = urllib.request.urlopen('https://lyncdiscoverinternal.extron.com/')
 
 contentHandler = content.read(400).decode()
 JSONObject = json.loads(contentHandler)
@@ -13,31 +12,23 @@ userURL = JSONObject['_links']['user']['href']
 OauthURL = urllib.request.Request(userURL)
 try:
     urllib.request.urlopen(OauthURL)
-except urllib.error.HTTPError as e: # TODO: Update this to parse ONLY for 401 error: 404/403/other will cause an issue
-    print(e.code)
+except urllib.error.HTTPError as e: # Update this to parse ONLY for 401 error: 404/403/other will cause an issue
     authHandler = e.getheader('WWW-Authenticate')
     OauthToken = re.findall('http[s]?:\/(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', authHandler)
-    print(OauthToken[0])
-else: # This is not very elegant... to be updated
+else:
     print('A different error occurred: You should have received a 401.')
 
-if OauthToken: # TODO: Update this to prompt for credentials instead of hard coding them.
-    DATA = {
-        'charset':'UTF-8',
-        'grant_type':'password',
-        'username':'email@domain.com',
-        'password':'password'
-            }
-    HEADERS = {
-        'Content-Type':'application/x-www-form-urlencoded',
-        'Content-Length':len(json.dumps(DATA))
-              }
-    req = urllib.request.Request(url=OauthToken[0],data=DATA,headers=HEADERS,method='PUT')
-    with urllib.request.urlopen(req) as OauthHandler:
-        pass
-    print(OauthHandler.status)
-    print(OauthHandler.reason)
+if OauthToken:
+    payload = urllib.parse.urlencode({"charset": "UTF-8", "grant_type": "password", "username": "jlasher@extron.com", "password": "Waynesboro9303!"})
+    headers = {'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': 96}
+    payload = payload.encode('utf-8')
+    raw_token = urllib.request.Request(OauthToken[0], payload, headers)
+    with urllib.request.urlopen('https://lyncweb.extron.com/WebTicket/oauthtoken', payload) as f:
+        access_token = f.read().decode('utf-8')
 
+    JSONToken = json.loads(access_token)
+    token = JSONToken['access_token']
+    print(token)
 
 
 '''
