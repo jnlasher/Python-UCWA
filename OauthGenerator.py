@@ -3,43 +3,75 @@ import urllib.parse
 import json
 import re
 
-content = urllib.request.urlopen('https://lyncdiscoverinternal.extron.com/')
+class OauthHandler:
+    def __init__(self):
+        self.discovery = 'https://lyncdiscoverinternal.extron.com/'
+        self.applicationsURL = None
+        self.updatedOauthToken = None
 
-contentHandler = content.read(400).decode()
-JSONObject = json.loads(contentHandler)
-userURL = JSONObject['_links']['user']['href']
+    def discoverPublic(self,userID,pwd):
+        contentHandler = urllib.request.urlopen(self.discovery)
+        content = json.loads(contentHandler.read().decode())
+        userAuth = content['_links']['user']['href']
+        oauthURL = self.__urlHelper(userAuth)
+        oauthToken = self.__getAuthToken(oauthURL[0], userID, pwd)
+        tokenHeader = {'Authorization':"Bearer {}".format(oauthToken)}
+        listingHandler = self.__urlHelper(userAuth, headers=tokenHeader)
+        listing = json.loads(listingHandler)
+        self.applicationsURL = listing['_links']['applications']['href']
+        print(listing)
+        matchString = '(https?:\/\/(?:[^\/]+)(?:[\/,]|$)|^(.*)$)'
+        discoveryDomain = re.findall(matchString, content['_links']['self']['href'])
+        localDomain = re.findall(matchString, listing['_links']['self']['href'])
 
-OauthURL = urllib.request.Request(userURL)
-try:
-    urllib.request.urlopen(OauthURL)
-except urllib.error.HTTPError as e: # Update this to parse ONLY for 401 error: 404/403/other will cause an issue
-    authHandler = e.getheader('WWW-Authenticate')
-    OauthToken = re.findall('http[s]?:\/(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', authHandler)
-else:
-    print('A different error occurred: You should have received a 401.')
-
-if OauthToken:
-    payload = urllib.parse.urlencode({"charset": "UTF-8", "grant_type": "password", "username": "jlasher@extron.com", "password": "Waynesboro9303!"})
-    headers = {'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': 96}
-    payload = payload.encode('utf-8')
-    raw_token = urllib.request.Request(OauthToken[0], payload, headers)
-    with urllib.request.urlopen('https://lyncweb.extron.com/WebTicket/oauthtoken', payload) as f:
-        access_token = f.read().decode('utf-8')
-
-    JSONToken = json.loads(access_token)
-    token = JSONToken['access_token']
-    print(token)
+        if discoveryDomain == localDomain:
+            print('Correct pool. Generating application...')
+            self.updatedOauthToken = oauthToken
+            #Send POST to applications resource under listing['_links']['applications']['href']
+            #Verify 201 response and store applications data
+        else:
+            print('Incorrect pool, updating token...')
+            updatedOauthURL = self.__urlHelper(listing['_links']['self']['href'])
+            self.updatedOauthToken = self.__getAuthToken(updatedOauthURL[0], userID, pwd)
+            print(updatedOauthURL)
+            print(self.updatedOauthToken)
 
 
-'''
-1. Send the above discovery URL and get the "user" URL
-2. POST "user" URL to get 401 authentication response
-3. Authentication response contains oauthtoken URL. Save that
-4. Use oauthtoken URL in POST wtih OAuth token grant type: password
-5. Password POST Request is as follows:
-    POST https://<someurl>.com/WebTicket/oauthtoken HTTP/1.1
-    Content-Type: application/x-www-form-urlencoded;charset='utf-8'
-    Username: jlasher@extron.com
-    Password: <mypassword>
-6. Collect your OAuth token
-'''
+
+    def createApplication(self, userAgent, endpointID, culture='en-US'):
+        url = self.applicationsURL #some URL from above function
+        payload = json.dumps({'UserAgent':userAgent, 'EndpointId':endpointID, 'Culture':culture})
+        headers = {
+            'authorization': "Bearer {}".format(self.updatedOauthToken),
+            'content-type': "application/json",
+            'cache-control': "no-cache"
+        }
+
+        request = urllib.request.Request(url, headers=headers, data=payload.encode())
+        with urllib.request.urlopen(request) as response:
+            listing = response.read().decode()
+        print(listing)
+
+
+    def __getAuthToken(self, url, userID, pwd):
+        payload = urllib.parse.urlencode({"charset": "UTF-8", "grant_type": "password", "username": userID, "password": pwd})
+        headers = {'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': len(str(payload))}
+        with urllib.request.urlopen(url, payload.encode()) as f:
+            access_token = f.read().decode('utf-8')
+        JSONToken = json.loads(access_token)
+        token = JSONToken['access_token']
+        return token
+
+
+    def __urlHelper(self, url, payload=None, headers={}):
+        try:
+            request = urllib.request.Request(url, headers=headers, data=payload)
+            with urllib.request.urlopen(request) as response:
+                responseData = response.read().decode()
+        except urllib.error.HTTPError as err:
+            if err.code == 401:
+                authHandler = err.getheader('WWW-Authenticate')
+                responseData = re.findall('http[s]?:\/(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', authHandler)
+            else:
+                print('HTTP Error occurred. Status: {}'.format(err.code))
+        return responseData
