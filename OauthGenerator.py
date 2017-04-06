@@ -7,7 +7,7 @@ import re
 
 class OauthHandler:
     def __init__(self):
-        self.discovery = 'https://lyncdiscoverinternal.extron.com/'
+        self.discovery = 'https://lyncdiscoverinternal.domain.com/'
         self.oauthToken = ''
         self.application = None
         self.locDomain = None
