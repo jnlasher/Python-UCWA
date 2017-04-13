@@ -1,3 +1,4 @@
+from extronlib.system import Wait
 import urllib.request
 import urllib.parse
 import json
@@ -7,13 +8,14 @@ import re
 
 class OauthHandler:
     def __init__(self):
-        self.discovery = 'https://lyncdiscoverinternal.domain.com/'
+        self.discovery = 'https://lyncdiscoverinternal.extron.com/'
         self.oauthToken = ''
-        self.application = None
         self.locDomain = None
-        
+        self.application = {}
+        self.meTasks = {}
+        self.peopleTasks = {}
     
-    def startApplication(self, userID, pwd, userAgent, endpointID, culture='en-US'):
+    def StartApplication(self, userID, pwd, userAgent, endpointID, culture='en-US'):
         # Run a GET request on the discovery URL to find the user URLs
         userLinks = self.getDiscovery()
         userAuth = userLinks['_links']['user']['href'] # User discovery URLs
@@ -46,8 +48,9 @@ class OauthHandler:
         appURL = appLinks['_links']['applications']['href']
         appData = {'UserAgent':userAgent, 'EndpointId':endpointID, 'Culture':culture}
         self.application = self._urlHelper('POST', appURL, self.oauthToken, msg=appData)
-        print('Application Created: {}'.format(self.application))
-          
+        self.meTasks = self.application['_embedded']['me']['_links']
+        self.peopleTasks = self.application['_embedded']['people']['_links']
+        print(self.application)  
           
     # Opener function to get the public domain links
     def getDiscovery(self):
@@ -85,8 +88,10 @@ class OauthHandler:
             try:
                 with urllib.request.urlopen(request) as response:
                     data = response.read().decode()
-                data = json.loads(data)
-                return data
+                if data != '':
+                    return json.loads(data)
+                else:
+                    return {}
             except urllib.error.HTTPError as err:
                 print('HTTPError {}'.format(err.code))
             except urllib.error.URLError as err:
@@ -118,14 +123,36 @@ class OauthHandler:
             token = response.read().decode()
             return json.loads(token)
             
-
+# Get/Set self presence data
     def setAvailable(self, resource, token):
-        path = json.dumps(self.application['_embedded']['me']['_links']['makeMeAvailable']['href']).strip('"')
+        path = self.meTasks['makeMeAvailable']['href']
         msg = {'SupportedModalities': ["Messaging"]}
-        return oauth_post_request(resource + path, token, config['redirect_uri'], msg)    
+        return self._urlHelper('POST', resource + path, token, msg=msg)
 
-      
-        
-        
-        
-        
+
+    def UpdateTasks(self, qualifier, option=None):
+        path = self.application['_links']['self']['href']
+        if 'makeMeAvailable' in self.meTasks:
+            print('setAvailable triggered')
+            self.setAvailable(self.locDomain, self.oauthToken)
+            self.meTasks = self._urlHelper('GET', self.locDomain+path, self.oauthToken)
+
+        command = self.meTasks[qualifier]['href']
+        if option:
+            msg = {"availability":option}
+            return self._urlHelper('POST', self.locDomain+command, self.oauthToken, msg=msg)
+        else:
+            return self._urlHelper('GET', self.locDomain+command, self.oauthToken)
+
+# Get Presence data of a contact
+    def GetPresence(self, sip):
+        uri = '{}/{}/presence'.format(self.peopleTasks['self']['href'], sip)
+        print('uri: ' + uri)
+        data = self._urlHelper('GET', self.locDomain+uri, self.oauthToken)
+        print(data)
+        # https://rnc-l13-webvip.extron.com/ucwa/oauth/v1/applications/102869412579/people/jhudson@extron.com/presence
+
+# Subscribe presence data of a contact
+    def ContactSubscription(self, duration, *args):
+        uris = ['sip:{}'.format(arg) for arg in args]
+        msg = {"duration":duration, "Uris":uris}
