@@ -1,158 +1,191 @@
-from extronlib.system import Wait
 import urllib.request
 import urllib.parse
+import urllib.error
 import json
 import re
 
-## TODO: Update the error handler function by subclassing the HTTPError
 
-class OauthHandler:
-    def __init__(self):
-        self.discovery = 'https://lyncdiscoverinternal.extron.com/'
+class UCWAApplication:
+    def __init__(self, userID, pwd, userAgent, endpointID):
+        self.userID = userID
+        self.pwd = pwd
+        self.userAgent = userAgent
+        self.endpointID = endpointID
+        self.culture = 'en-US'
+        self.rootDomain = ''
         self.oauthToken = ''
-        self.locDomain = None
         self.application = {}
         self.meTasks = {}
         self.peopleTasks = {}
-    
-    def StartApplication(self, userID, pwd, userAgent, endpointID, culture='en-US'):
-        # Run a GET request on the discovery URL to find the user URLs
-        userLinks = self.getDiscovery()
-        userAuth = userLinks['_links']['user']['href'] # User discovery URLs
-        oauthURL = self._urlHelper('GET', userAuth, self.oauthToken) # GET authentication url
-        
-        # Prepare the data and headers to get the token, then POST to the oauthURL
-        oauthResponse = self.getToken(oauthURL, userID, pwd)
-        oauthToken = oauthResponse['access_token']
-        
-        # Send the original GET request with the token header set
-        rawStr = self._urlHelper('GET', userAuth, token=oauthToken)
-        appLinks = json.loads(rawStr)
-        
-        # Check if the token is in the same application pool as the root pool
-        # If not, we need to generate a new token or we will get a 500 error
+
+    def StartApplication(self):
+        """Create the application and store it for use. This needs to be called before any of the below commands."""
         matchString = 'https?:\/\/(?:[^\/]+)|^(.*)$'
-        pubDomain = re.search(matchString, userLinks['_links']['self']['href'])
-        locDomain = re.search(matchString, appLinks['_links']['self']['href'])
-        self.locDomain = locDomain.group(0)
-        if pubDomain.group(0) == locDomain.group(0):
-            self.oauthToken = oauthToken
-            print(self.oauthToken)
-        else:
-            locOauthURL = self._urlHelper('GET', appLinks['_links']['self']['href'], token='') 
-            locOauth = self.getToken(locOauthURL, userID, pwd)
-            self.oauthToken = locOauth['access_token']
-            print(self.oauthToken)
-            
-        # POST the corrected token to the application URL to generate the application
+
+        userLinks = self.getDiscovery()
+        userAuth = userLinks['_links']['user']['href']
+        oauthURL = self._urlHelper('GET', userAuth, self.oauthToken)
+        oauthResponse = self.getToken(oauthURL)
+        oauthToken = oauthResponse['access_token']
+        oauthURL = self._urlHelper('GET', userAuth, token=oauthToken)
+        appLinks = json.loads(oauthURL)
+
+        publicDomain = re.search(matchString, userLinks['_links']['self']['href'])
+        localDomain = re.search(matchString, appLinks['_links']['self']['href'])
+        if publicDomain.group(0) == localDomain.group(0):
+            self.oauthToken = oauthToken # No changes in group necessary
+            self.rootDomain = publicDomain.group(0)
+        else: # Different domains, need to correct pool error
+            oauthURL = self._urlHelper('GET', appLinks['_links']['self']['href'], token='')
+            newToken = self.getToken(oauthURL)
+            self.oauthToken = newToken['access_token']
+            self.rootDomain = localDomain.group(0)
+
         appURL = appLinks['_links']['applications']['href']
-        appData = {'UserAgent':userAgent, 'EndpointId':endpointID, 'Culture':culture}
-        self.application = self._urlHelper('POST', appURL, self.oauthToken, msg=appData)
+        appData = {'UserAgent':self.userAgent, 'EndpointId':self.endpointID, 'Culture':self.culture}
+        rawApp = self._urlHelper('POST', appURL, self.oauthToken, msg=appData)
+        self.application = json.loads(rawApp)
         self.meTasks = self.application['_embedded']['me']['_links']
         self.peopleTasks = self.application['_embedded']['people']['_links']
-        print(self.application)  
-          
-    # Opener function to get the public domain links
-    def getDiscovery(self):
-        contentHandler = urllib.request.urlopen(self.discovery)
-        content = json.loads(contentHandler.read().decode())
-        return content
-           
-            
-    # Helper for the GET and POST requests when starting the application    
-    def _urlHelper(self, _method, url, token, msg = None):
-        if _method == 'GET':
-            headers = {
-                'Authorization': 'Bearer {}'.format(token),
-                'Accept': 'application/json'
-            }
-            try:
-                request = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(request) as response:
-                    data = response.read().decode()
-                    return data
-            except urllib.error.HTTPError as err:
-                if err.code == 401:
-                    data = self.handleAuth(err)
-                    return data
-            else:
-                raise err
-        elif _method == 'POST':
-            headers = {
-                'Authorization': 'Bearer {}'.format(token),
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-            }
-            payload = json.dumps(msg)
-            request = urllib.request.Request(url, headers=headers, data=payload.encode())
-            try:
-                with urllib.request.urlopen(request) as response:
-                    data = response.read().decode()
-                if data != '':
-                    return json.loads(data)
-                else:
-                    return {}
-            except urllib.error.HTTPError as err:
-                print('HTTPError {}'.format(err.code))
-            except urllib.error.URLError as err:
-                print('URL error: {}'.format(err.message)) # Handle URL not found error
-            else:
-                raise err
-         
-         
-    # Handles authentication for 401 errors during the startApplication process        
-    def handleAuth(self, eobj):
-        errheaders = str(eobj.hdrs)
-        pattern = re.compile('http[s]?:\/(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+')
-        authURL = pattern.search(errheaders) 
-        return authURL.group(0)  
+## End creating application
+## Begin Application Tasks
+    def GetPresence(self, sip):
+    # Get the presence data of a contact
+        uri = '{}/{}/presence'.format(self.peopleTasks['self']['href'], sip)
+        try:
+            data = self._urlHelper('GET', self.rootDomain+uri, self.oauthToken)
+            return data
+        except urllib.error.HTTPError as err:
+            HandleHTTPResponse().Handler(err)
 
-    
-    def getToken(self, url, userId, pwd):
+    """ TODO
+    def ContactSubscription(self, duration, *args):
+    # Subscribe presence data of a contact
+        uris = ['sip:{}'.format(arg) for arg in args]
+        msg = {"duration":duration, "Uris":uris}
+    """
+
+    def SetAvailable(self, resource, token):
+        path = self.meTasks['makeMeAvailable']['href']
+        msg = {'SupportedModalities': ["Messaging"]}
+        return self._urlHelper('POST', resource + path, token, msg=msg)
+
+    def UpdateTasks(self, qualifier, option=None):
+        path = self.application['_links']['self']['href']
+        if 'makeMeAvailable' in self.meTasks:
+            self.SetAvailable(self.rootDomain, self.oauthToken)
+            self.meTasks = json.loads(self._urlHelper('GET', self.rootDomain+path, self.oauthToken))['_embedded']['me']['_links']
+
+        command = self.meTasks[qualifier]['href']
+        if option:
+            msg = {"availability":option}
+            try:
+                return self._urlHelper('POST', self.rootDomain+command, self.oauthToken, msg=msg)
+            except urllib.error.HTTPError as err:
+                HandleHTTPResponse().Handler(err)
+        else:
+            try:
+                return self._urlHelper('GET', self.rootDomain+command, self.oauthToken)
+            except urllib.error.HTTPError as err:
+                HandleHTTPResponse().Handler(err)
+
+##############################################################################
+## Begin Helper Functions
+## Helper functions are used by the above functions to create headers and make
+## requests to the RESTful API. It is recommended that you do not change these
+##############################################################################
+    def _urlHelper(self, method, url, token, msg=None):
+        request = urllib.request.Request(url)
+        request.add_header('Authorization', 'Bearer {}'.format(token))
+        request.add_header('Accept', 'application/json')
+        if method == 'GET':
+            pass # No data required to send
+        elif method == 'POST': # Prepare data and headers
+            request.add_header('Content-Type', 'application/json')
+            payload = json.dumps(msg)
+            request.data = payload.encode()
+        try:
+            with urllib.request.urlopen(request) as response:
+                data = response.read().decode()
+            if data != '':
+                return data
+            else:
+                return {}
+        except urllib.error.HTTPError as err:
+            data = HandleHTTPResponse().Handler(err)
+            return data
+
+    def getDiscovery(self):
+        try:
+            handler = urllib.request.urlopen('https://lyncdiscoverinternal.yourdomain.com/')
+            content = json.loads(handler.read().decode())
+            return content
+        except urllib.error.HTTPError as err:
+            HandleHTTPResponse().Handler(err)
+
+    def getToken(self, url):
         authBody = urllib.parse.urlencode({
-            "charset": "UTF-8", 
-            "grant_type": "password", 
-            "username": userId, 
-            "password": pwd
+            "charset": "UTF-8",
+            "grant_type": "password",
+            "username": self.userID,
+            "password": self.pwd
         })
         authHeaders = {
             'Content-Type': 'application/x-www-form-urlencoded',
             'Content-Length': len(str(authBody))}
         request = urllib.request.Request(url, headers=authHeaders, data=authBody.encode())
-        with urllib.request.urlopen(request) as response:
-            token = response.read().decode()
-            return json.loads(token)
-            
-# Get/Set self presence data
-    def setAvailable(self, resource, token):
-        path = self.meTasks['makeMeAvailable']['href']
-        msg = {'SupportedModalities': ["Messaging"]}
-        return self._urlHelper('POST', resource + path, token, msg=msg)
+        try:
+            with urllib.request.urlopen(request) as response:
+                token = response.read().decode()
+                return json.loads(token)
+        except urllib.error.HTTPError as err:
+            HandleHTTPResponse().Handler(err)
+
+    def _renewal(self):
+        print('Renewing application')
+        tokenURL = self.rootDomain + '/WebTicket/oauthtoken'
+        appURL = self.rootDomain + '/ucwa/oauth/v1/applications'
+        data = {'UserAgent':self.userAgent, 'EndpointId':self.endpointID, 'Culture':self.culture}
+
+        self.oauthToken = self.getToken(tokenURL) # Renew the token
+        self.application = json.loads(self._urlHelper('POST', appURL, self.oauthToken, msg=data)) # Update the Application
 
 
-    def UpdateTasks(self, qualifier, option=None):
-        path = self.application['_links']['self']['href']
-        if 'makeMeAvailable' in self.meTasks:
-            print('setAvailable triggered')
-            self.setAvailable(self.locDomain, self.oauthToken)
-            self.meTasks = self._urlHelper('GET', self.locDomain+path, self.oauthToken)
+class HandleHTTPResponse():
+    def __init__(self):
+        user = None
+        pwd = None
+        agent = None
+        ID = None
+        self.update = UCWAApplication(user, pwd, agent, ID)
 
-        command = self.meTasks[qualifier]['href']
-        if option:
-            msg = {"availability":option}
-            return self._urlHelper('POST', self.locDomain+command, self.oauthToken, msg=msg)
+    def Handler(self, response):
+        code = response.code
+        if code == 200:
+            return None
+        elif code == 201:
+            return 'Application was created'
+        elif code == 400:
+            print('Bad Request -> The URL was invalid.')
+            raise urllib.error.HTTPError
+        elif code == 401:
+            return self.AuthHandler(response)
+        elif code == 404:
+            print('Updating application')
+            return self.UpdateApplication()
+        elif code == 500:
+            return 'This is a problem with multiple realms. It should be corrected in the main application'
+        elif code in range(400, 503):
+            print('Unhandled Exception')
+            raise urllib.error.HTTPError
         else:
-            return self._urlHelper('GET', self.locDomain+command, self.oauthToken)
+            return 'An HTTP status was not found. Check your network connection.'
 
-# Get Presence data of a contact
-    def GetPresence(self, sip):
-        uri = '{}/{}/presence'.format(self.peopleTasks['self']['href'], sip)
-        print('uri: ' + uri)
-        data = self._urlHelper('GET', self.locDomain+uri, self.oauthToken)
-        print(data)
-        # https://rnc-l13-webvip.extron.com/ucwa/oauth/v1/applications/102869412579/people/jhudson@extron.com/presence
+    def AuthHandler(self, response):
+        data = str(response.hdrs)
+        pattern = re.compile('http[s]?:\/(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+')
+        url = pattern.search(data)
+        return url.group(0)
 
-# Subscribe presence data of a contact
-    def ContactSubscription(self, duration, *args):
-        uris = ['sip:{}'.format(arg) for arg in args]
-        msg = {"duration":duration, "Uris":uris}
+    def UpdateApplication(self):
+        return self.update._renewal()
