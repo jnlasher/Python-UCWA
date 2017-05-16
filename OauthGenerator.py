@@ -155,7 +155,7 @@ class UCWAApplication:
 
     def getDiscovery(self):
         try:
-            handler = urllib.request.urlopen('https://lyncweb.extron.com/')
+            handler = urllib.request.urlopen('https://lyncweb.your-domain.com/')
             content = json.loads(handler.read().decode())
             return content
         except urllib.error.HTTPError as err:
