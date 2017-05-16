@@ -17,6 +17,7 @@ class UCWAApplication:
         self.application = {}
         self.meTasks = {}
         self.peopleTasks = {}
+        self.Communication = {}
 
     def StartApplication(self):
         """Create the application and store it for use. This needs to be called before any of the below commands."""
@@ -47,6 +48,7 @@ class UCWAApplication:
         self.application = json.loads(rawApp)
         self.meTasks = self.application['_embedded']['me']['_links']
         self.peopleTasks = self.application['_embedded']['people']['_links']
+        self.Communication = self.application['_embedded']['communication']['_links']
 ## End creating application
 ## Begin Application Tasks
     def GetPresence(self, sip):
@@ -65,6 +67,42 @@ class UCWAApplication:
         msg = {"duration":duration, "Uris":uris}
     """
 
+    def StartMessaging(self, sip, importance='Normal', context='', subject='New Message'):
+        data = {
+          "importance":importance,
+          "sessionContext":context,
+          "subject":subject,
+          "telemetryId":None,
+          "to":sip,
+          "operationId":self.endpointID
+        }
+        messageuri = self.rootDomain+self.Communication['_links']['startMessaging']['href']
+        eventsuri = self.rootDomain+self.application['_links']['events']['href']
+        self._urlHelper('POST', messageuri, self.oauthToken, msg=data)
+        events = json.dumps(self._urlHelper('GET', eventsuri, self.oauthToken))
+
+        while events['sender']['events']['_embedded']['messagingInvitation']['state'] == 'Connecting':
+            nextEvent = events['_links']['next']['href']
+            eventsuri = self.rootDomain+nextEvent
+            # @Wait(1)
+            events = json.dumps(self._urlHelper('GET', eventsuri, self.oauthToken))
+
+        if events['sender']['events']['_embedded']['messagingInvitation']['state'] == 'Connected':
+            val = events['_embedded']['messaging']['_links']['sendMessage']['href']
+        else:
+            val = False
+
+        return val
+
+    def SendMessage(self, message, url):
+        if url:
+            self._urlHelper('POST', self.rootDomain+url, self.oauthToken, msg=message)
+
+    def StopMessaging(self, url):
+        if url:
+            self._urlHelper('POST', self.rootDomain+url, self.oauthToken)
+
+# ----------------------------------------------------------------------------------------------------------------------
     def SetAvailable(self, resource, token):
         path = self.meTasks['makeMeAvailable']['href']
         msg = {'SupportedModalities': ["Messaging"]}
@@ -117,7 +155,7 @@ class UCWAApplication:
 
     def getDiscovery(self):
         try:
-            handler = urllib.request.urlopen('https://lyncdiscoverinternal.yourdomain.com/')
+            handler = urllib.request.urlopen('https://lyncweb.extron.com/')
             content = json.loads(handler.read().decode())
             return content
         except urllib.error.HTTPError as err:
@@ -141,7 +179,7 @@ class UCWAApplication:
         except urllib.error.HTTPError as err:
             HandleHTTPResponse().Handler(err)
 
-    def _renewal(self):
+    def Renewal(self):
         print('Renewing application')
         tokenURL = self.rootDomain + '/WebTicket/oauthtoken'
         appURL = self.rootDomain + '/ucwa/oauth/v1/applications'
@@ -151,7 +189,7 @@ class UCWAApplication:
         self.application = json.loads(self._urlHelper('POST', appURL, self.oauthToken, msg=data)) # Update the Application
 
 
-class HandleHTTPResponse():
+class HandleHTTPResponse:
     def __init__(self):
         user = None
         pwd = None
@@ -162,19 +200,21 @@ class HandleHTTPResponse():
     def Handler(self, response):
         code = response.code
         if code == 200:
-            return None
+            pass
         elif code == 201:
-            return 'Application was created'
+            print('Application was created')
+            pass
         elif code == 400:
-            print('Bad Request -> The URL was invalid.')
-            raise urllib.error.HTTPError
+            raise Exception('Bad Request -> The URL was invalid.')
         elif code == 401:
             return self.AuthHandler(response)
+        elif code == 403:
+            raise Exception('ERROR: You do not have access to the UCWA URL.')
         elif code == 404:
             print('Updating application')
             return self.UpdateApplication()
         elif code == 500:
-            return 'This is a problem with multiple realms. It should be corrected in the main application'
+            raise Exception('This is a problem with multiple realms. It should be corrected in the main application')
         elif code in range(400, 503):
             print('Unhandled Exception')
             raise urllib.error.HTTPError
@@ -188,4 +228,4 @@ class HandleHTTPResponse():
         return url.group(0)
 
     def UpdateApplication(self):
-        return self.update._renewal()
+        return self.update.Renewal()
