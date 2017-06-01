@@ -6,7 +6,7 @@ Files for connecting to the REST API of Skype for Business
 1) Instantiate the class with the user ID (SIP address) and password of a valid account. User Agent and Endpoint ID are both arbitrary identifiers. 
 Then call the ```StartApplication``` method
 ```bash
-myapp = myapp = UCWAApp.UCWAApplication(userID, pwd, userAgent, endpointID)
+myapp = UCWAApp.UCWAApplication(userID, pwd, userAgent, endpointID)
 myapp.StartApplication()
 ```
 
