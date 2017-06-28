@@ -29,7 +29,7 @@ class UCWA:
     ## --------------------------------------------------------------------------------------- ##
     def StartApplication(self):
         """ Begin the application resource """
-        
+
         # 1. GET on the autodiscover server and grab 'user' URL
         userURLs = self._getUser()
         matchString = 'https?:\/\/(?:[^\/]+)|^(.*)$'
@@ -49,16 +49,21 @@ class UCWA:
         self.meetingTasks = self.createdApplication["_embedded"]["onlineMeetings"]["_links"]
         self.communicationTasks = self.createdApplication["_embedded"]["communication"]["_links"]
         self.eventURL = self.createdApplication["_links"]["events"]["href"]
-        print('Event URL, ', self.eventURL)
+        print('Event URL, ', self.eventURL) # Proof the application was created
 
     ## --------------------------------------------------------------------------------------- ##
     ## Calls to be made by the user once application is created
     ## --------------------------------------------------------------------------------------- ##
+    def GetPresence(self, sip):
+        url = self.rootDomain + self.peopleTasks['self']['href'] + sip + '/presence'
+        return self._httpRequestHelper('GET', url)
+
     def OpenChannel(self, sip, context=None):
         """ Open a channel to begin sending/receiving messages to a specific contact """
-        
+        state = None
+        messageOptions = None
         # Create a context for this conversation if none is provided. This is an arbitrary 6-digit str
-        if not context: 
+        if not context:
             context = str(randint(10**(6-1), (10**6)-1))
         data = {
             "importance":"Normal",
@@ -73,14 +78,13 @@ class UCWA:
         # the Event url should be update on each call once the conversation has been opened
         newEvent = self._updateEvents()
         convStatus = self._searchResponse(newEvent, 'sender', 'state')
-        
+
         # Check if the conversation is still connecting
         while convStatus == 'Connecting':
             newEvent = self._updateEvents()
             convStatus = self._searchResponse(newEvent, 'sender', 'state')
             time.sleep(1) # Wait for a short time and check if it has connected
-            print(newEvent)
-        
+
         # Check the status of the conversation for errors
         for item in newEvent["sender"]:
             for keyword in item["events"]:
@@ -88,10 +92,10 @@ class UCWA:
                     state = keyword['status']
                 else:
                     state = None
-        
+
         # If a successful connection is established, store the urls for communication
         if state == 'Success':
-            print('Success, ', newEvent)
+            print('Success')
             for item in newEvent["sender"]:
                 for x in item["events"]:
                     if "_embedded" in x and "messaging" in x["_embedded"]:
@@ -99,30 +103,28 @@ class UCWA:
                     else:
                         continue
         else:
-            messageOptions = None
             print('Server error - {}'.format(state))
 
         return messageOptions if messageOptions else None
 
-    def Message(self, messageOptions, option, text=''):
+    def Message(self, messageOptions, option, text=None):
         """ send, stop, or view the current channel. option parameter accepts keys from the OpenChannel dictionary.
             These are: sendMessage, stopMessaging, conversation, and self"""
 
         url = self.rootDomain + messageOptions[option]["href"]
-        self.headers['Content-Type'] = 'text/plain'
+        print("url, ", url)
+        headers = {'Content-Type': "text/plain",
+                   'Accept': "application/json",
+                   'Authorization': "Bearer {}".format(self.oauthToken)}
 
-        if text:
+        if not isinstance(text, bytes):
             text = text.encode()
 
-        data = self._httpRequestHelper('POST', url, text)
-        self._updateEvents() # MUST update the events resource after each call to the messaging channel
+        msgRequest = request.Request(url, data=text, headers=headers)
+        with request.urlopen(msgRequest) as response:
+            self._updateEvents()
+            data = response.read().decode()
         return data if data else ''
-
-    """msgRequest = request.Request(url, data=text, headers=headers)
-    with request.urlopen(msgRequest) as response:
-        print(response.getcode())
-        self._updateEvents()
-        data = response.read().decode()"""
 
     def GetMessage(self):
         # Open the Event channel and store the data
@@ -135,39 +137,52 @@ class UCWA:
     ## --------------------------------------------------------------------------------------- ##
     def processEvent(self, evtDict):
         """ Check an event dictionary for message information """
-        
+
         responseData = {}
         getContact = r'(people/)(.*)'
         getTimeStamp = r'\d{13}'
-        
+        getTypingStatus = r'(participants/)(.*)'
+        message = None
+        status = None
+        typingStatus = None
         # Check the dictionary for error status as well as message information
         for item in evtDict['sender']:
             for key in item['events']:
                 if '_embedded' in key:
                     message = key['_embedded']['message']
-                elif 'status' in key:
+                if 'status' in key:
                     status = key['status']
-        
+                if 'in' in key and key['in']['rel'] == 'typingParticipants':
+                    typingStatus = key['link']['href']
+
+        if typingStatus:
+            fromContact = re.search(getTypingStatus, typingStatus)
+            responseData['From'] = fromContact
+            responseData['Status'] = 'IsTyping'
+
         if message:
             fromContact = message['_links']['contact']['href']
             text = message['_links']['plainMessage']['href']
             timeStamp = message['timeStamp']
-        
+
             # Data is encoded but is handled as a string. Process text in a custom method
             text = self._decodeResponse(text)
-            
+
             fromContact = re.search(getContact, fromContact).group(2)
-            timeStamp = re.search(getTimeStamp, timeStamp)
-        
+            timeStamp = re.search(getTimeStamp, timeStamp).group(0)
+
             # Convert from epoch time to standard date/time format
             s, ms = divmod(int(timeStamp), 1000)
             curTime = '{}.{:03d}'.format(time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(s)), ms)
-            
+
             # Build the response dictionary
             responseData['From'] = fromContact
             responseData['Message'] = text
             responseData['Time'] = curTime
             responseData['Status'] = status
+
+        if not typingStatus and not message:
+            responseData['Status'] = 'Keep-Alive'
 
         return responseData
 
@@ -261,6 +276,7 @@ class UCWA:
         pass
 
     def _searchResponse(self, adict, key, value):
+        status = None
         for item in adict[key]:
             for x in item['events']:
                 if '_embedded' in x and 'conversation' in x['_embedded']:
@@ -271,7 +287,6 @@ class UCWA:
 
     def _updateEvents(self):
         url = self.rootDomain + self.eventURL
-        print('event: ', url)
         eventLog = self._httpRequestHelper('GET', url)
         eventLog = json.loads(eventLog)
         self.eventURL = eventLog["_links"]["next"]["href"]
@@ -280,7 +295,7 @@ class UCWA:
         return eventLog
 
     def _decodeResponse(self, string):
-        matchString = r"'charset=(.{1,})[,](\S{0,})"
+        matchString = r"charset=(.{1,})[,](\S{0,})"
         mObj = re.search(matchString, string)
         encoding = mObj.group(1)
         message = mObj.group(2)
