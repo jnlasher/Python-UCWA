@@ -4,6 +4,10 @@ import json
 import re
 import time
 
+debug = True
+if not debug:
+    print = lambda *a, **k: None
+
 
 class UCWA:
     def __init__(self, domain, userID, userPWD, UserAgent, EndpointId):
@@ -23,12 +27,14 @@ class UCWA:
         self.rootDomain = None
         self.eventURL = None
         self.headers = {}
+        self.contactDetails = {}
 
     ## --------------------------------------------------------------------------------------- ##
     ## Call this before doing anything else
     ## --------------------------------------------------------------------------------------- ##
     def StartApplication(self):
         """ Begin the application resource """
+        print('StartApplication()')
 
         # 1. GET on the autodiscover server and grab 'user' URL
         userURLs = self._getUser()
@@ -41,40 +47,46 @@ class UCWA:
         # 4. GET as in 2., but this time with token. Grab the applications URL
         authResponse = json.loads(self._authUser(userURLs["_links"]["user"]["href"]))
         # 5. POST to the applications URL and it should return application.
-        appData = {'UserAgent':self.UserAgent, 'EndpointId':self.EndpointId, 'Culture':"en-US"}
-        self.createdApplication = json.loads(self._httpRequestHelper('POST', authResponse["_links"]["applications"]["href"], appData))
+        appData = {'UserAgent': self.UserAgent, 'EndpointId': self.EndpointId, 'Culture': "en-US"}
+        self.createdApplication = json.loads(
+            self._httpRequestHelper('POST', authResponse["_links"]["applications"]["href"], appData))
         # Store the created data into manageable dictionaries we can point to the main application
         self.meTasks = self.createdApplication["_embedded"]["me"]["_links"]
         self.peopleTasks = self.createdApplication["_embedded"]["people"]["_links"]
         self.meetingTasks = self.createdApplication["_embedded"]["onlineMeetings"]["_links"]
         self.communicationTasks = self.createdApplication["_embedded"]["communication"]["_links"]
         self.eventURL = self.createdApplication["_links"]["events"]["href"]
-        print('Event URL, ', self.eventURL) # Proof the application was created
+        print('Event URL, ', self.eventURL)  # Proof the application was created
 
     ## --------------------------------------------------------------------------------------- ##
     ## Calls to be made by the user once application is created
     ## --------------------------------------------------------------------------------------- ##
     def GetPresence(self, sip):
-        url = self.rootDomain + self.peopleTasks['self']['href'] + sip + '/presence'
+        print('GetPresence(sip={})'.format(sip))
+        url = self.rootDomain + self.peopleTasks['self']['href'] + '/' + sip + '/presence'
         return self._httpRequestHelper('GET', url)
 
     def OpenChannel(self, sip, context=None):
         """ Open a channel to begin sending/receiving messages to a specific contact """
+        print('OpenChannel(sip={}, context={})'.format(sip, context))
         state = None
         messageOptions = None
         # Create a context for this conversation if none is provided. This is an arbitrary 6-digit str
         if not context:
-            context = str(randint(10**(6-1), (10**6)-1))
+            context = str(randint(10 ** (6 - 1), (10 ** 6) - 1))
         data = {
-            "importance":"Normal",
-            "sessionContext":context,
-            "subject":"Sample Subject",
-            "telemetryId":None,
-            "to":"sip:{}".format(sip),
-            "operationId":self.EndpointId
+            "importance": "Normal",
+            "sessionContext": context,
+            "subject": "Sample Subject",
+            "telemetryId": None,
+            "to": "sip:{}".format(sip),
+            "operationId": self.EndpointId
         }
         msgURL = self.rootDomain + self.communicationTasks["startMessaging"]["href"]
-        self._httpRequestHelper('POST', msgURL, data)
+        print('msgURL=', msgURL)
+        resp = self._httpRequestHelper('POST', msgURL, data)
+        print('resp=', resp)
+
         # the Event url should be update on each call once the conversation has been opened
         newEvent = self._updateEvents()
         convStatus = self._searchResponse(newEvent, 'sender', 'state')
@@ -83,15 +95,12 @@ class UCWA:
         while convStatus == 'Connecting':
             newEvent = self._updateEvents()
             convStatus = self._searchResponse(newEvent, 'sender', 'state')
-            time.sleep(1) # Wait for a short time and check if it has connected
+            time.sleep(1)  # Wait for a short time and check if it has connected
 
         # Check the status of the conversation for errors
         for item in newEvent["sender"]:
             for keyword in item["events"]:
-                if 'status' in keyword:
-                    state = keyword['status']
-                else:
-                    state = None
+                state = keyword.get('status', None)
 
         # If a successful connection is established, store the urls for communication
         if state == 'Success':
@@ -103,13 +112,19 @@ class UCWA:
                     else:
                         continue
         else:
+            print('state != \'Success\'')
+            print('newEvent=', newEvent)
+            print('convStatus=', convStatus)
             print('Server error - {}'.format(state))
 
-        return messageOptions if messageOptions else None
+        return messageOptions
 
     def Message(self, messageOptions, option, text=None):
         """ send, stop, or view the current channel. option parameter accepts keys from the OpenChannel dictionary.
             These are: sendMessage, stopMessaging, conversation, and self"""
+        print('Message(messageOptions={}, option={}, text={})'.format(messageOptions, option, text))
+        if messageOptions is None:
+            raise TypeError('messageOptions cannot be None')
 
         url = self.rootDomain + messageOptions[option]["href"]
         print("url, ", url)
@@ -127,15 +142,43 @@ class UCWA:
         return data if data else ''
 
     def GetMessage(self):
+        print('GetMessage()')
         # Open the Event channel and store the data
         rel = self._updateEvents()
         # Return a dictionary containing information about the last incoming message
         return self.processEvent(rel)
 
+    def UpdateContactList(self):
+        print('UpdateContactList()')
+        contactDetails = {}
+        url = self.rootDomain + self.peopleTasks['myContacts']['href']
+        d = json.loads(self._httpRequestHelper('GET', url))
+        contactList = d['_embedded']['contact']
+        for contact in contactList:
+            eMail = contact['emailAddresses'] if 'emailAddresses' in contact else None
+            mPhone = contact['mobilePhoneNumber'] if 'mobilePhoneNumber' in contact else None
+            wPhone = contact['workPhoneNumber'] if 'workPhoneNumber' in contact else None
+            uri = contact['uri'][4:]
+            contactDetails[contact['name']] = {'emailAddresses': eMail,
+                                               'mobile': mPhone,
+                                               'work': wPhone,
+                                               'uri': uri}
+        self.contactDetails = contactDetails
+        return contactDetails
+
+    def GetContactDetails(self, name):
+        print('GetContactDetails(name={})'.format(name))
+        searchResponse = {}
+        for key in self.contactDetails:
+            if name in key:
+                searchResponse[key] = self.contactDetails[key]
+        return searchResponse
+
     ## --------------------------------------------------------------------------------------- ##
     ## Internal methods for preparing and formatting information
     ## --------------------------------------------------------------------------------------- ##
     def processEvent(self, evtDict):
+        print('processEvent(evtDict={})'.format(evtDict))
         """ Check an event dictionary for message information """
 
         responseData = {}
@@ -187,11 +230,12 @@ class UCWA:
         return responseData
 
     def _httpRequestHelper(self, method, url, payload=None):
+        print('_httpRequestHelper(method={}, url={}, payload={})'.format(method, url, payload))
         self.headers = {
-            'Accept':"application/json",
+            'Accept': "application/json",
         }
 
-        if self.oauthToken: # Prepare the appropriate headers if token has been generated
+        if self.oauthToken:  # Prepare the appropriate headers if token has been generated
             self.headers['Authorization'] = "Bearer {}".format(self.oauthToken)
 
         if method == 'POST':
@@ -201,7 +245,7 @@ class UCWA:
             else:
                 self.headers['Content-Type'] = "application/x-www-form-urlencoded;charset='utf-8'"
 
-        if payload and not isinstance(payload, bytes): # Prepare the payload, if it exists
+        if payload and not isinstance(payload, bytes):  # Prepare the payload, if it exists
             payload = payload.encode()
         myRequest = request.Request(url, data=payload, headers=self.headers, method=method)
         try:
@@ -217,6 +261,7 @@ class UCWA:
         return data if data else None
 
     def _handleExceptionResponse(self, err, url):
+        print('_handleExceptionResponse(err={}, url={})'.format(err, url))
         code = err.code
         if code == 401:
             return self._authHandler(err)
@@ -226,9 +271,10 @@ class UCWA:
         elif not self.createdApplication and code == 500:
             return self._updateTokenDomain(url)
         else:
-            raise Exception('HTTP response error: {} - {}'.format(err.code, err.reason))
+            raise Exception('HTTP response error: code:{} - reason:{} - url:{}'.format(err.code, err.reason, url))
 
     def _prepareDomain(self, val):
+        print('_prepareDomain(val={})'.format(val))
         url = parse.urlparse(val)
         if url.netloc:
             val = url.netloc.replace("www.", "")
@@ -237,12 +283,15 @@ class UCWA:
         return val
 
     def _getUser(self):
+        print('_getUser()')
         return json.loads(self._httpRequestHelper('GET', self.discoveryURL))
 
     def _authUser(self, url):
+        print('_authUser(url={})'.format(url))
         return self._httpRequestHelper('GET', url=url)
 
     def _getToken(self, url):
+        print('_getToken(url={})'.format(url))
         loginData = parse.urlencode({
             "charset": "UTF-8",
             "grant_type": "password",
@@ -254,19 +303,22 @@ class UCWA:
         return token["access_token"]
 
     def _updateTokenDomain(self, url):
+        print('_updateTokenDomain(url={})'.format(url))
         # Don't recall the request with the HTTP helper method here in case there is an actual 500 error (it will loop)
         matchString = 'https?:\/\/(?:[^\/]+)|^(.*)$'
         self.rootDomain = re.search(matchString, url).group(0)
         tokenurl = self.rootDomain + '/WebTicket/oauthtoken'
         self.oauthToken = self._getToken(tokenurl)
         appData = json.dumps({'UserAgent': self.UserAgent, 'EndpointId': self.EndpointId, 'Culture': "en-US"})
-        headers = {'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer {}'.format(self.oauthToken)}
+        headers = {'Content-Type': 'application/json', 'Accept': 'application/json',
+                   'Authorization': 'Bearer {}'.format(self.oauthToken)}
         myRequest = request.Request(url, data=appData.encode(), headers=headers, method='POST')
         with request.urlopen(myRequest) as response:
             data = response.read().decode()
         return data
 
     def _authHandler(self, response):
+        print('_authHandler(response={})'.format(response))
         data = str(response.hdrs)
         pattern = re.compile('http[s]?:\/(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+')
         url = pattern.search(data)
@@ -276,6 +328,7 @@ class UCWA:
         pass
 
     def _searchResponse(self, adict, key, value):
+        print('_searchResponse(adict={}, key={}, value={})'.format(adict, key, value))
         status = None
         for item in adict[key]:
             for x in item['events']:
@@ -286,15 +339,18 @@ class UCWA:
         return status if status else None
 
     def _updateEvents(self):
+        print('_updateEvents()')
         url = self.rootDomain + self.eventURL
         eventLog = self._httpRequestHelper('GET', url)
-        eventLog = json.loads(eventLog)
-        self.eventURL = eventLog["_links"]["next"]["href"]
+        if eventLog:
+            eventLog = json.loads(eventLog)
+            self.eventURL = eventLog["_links"]["next"]["href"]
 
-        print(eventLog)
+        print('eventLog=', eventLog)
         return eventLog
 
     def _decodeResponse(self, string):
+        print('_decodeResponse(string={})'.format(string))
         matchString = r"charset=(.{1,})[,](\S{0,})"
         mObj = re.search(matchString, string)
         encoding = mObj.group(1)
@@ -305,7 +361,6 @@ class UCWA:
             message = " ".join(message.split('+'))
 
         return message
-
 
     ## --------------------------------------------------------------------------------------- ##
     ## Useful for debugging
